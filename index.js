@@ -29,7 +29,7 @@ app.use(helmet({
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
-const allowedOrigins = process.env.CLIENT_URL 
+const allowedOrigins = process.env.CLIENT_URL
     ? process.env.CLIENT_URL.split(',').map(url => url.trim())
     : ['http://localhost:3000', 'http://localhost:5173'];
 
@@ -51,17 +51,7 @@ app.use(cors({
     optionsSuccessStatus: 200
 }));
 
-app.use(express.json({ 
-    limit: '10mb',
-    verify: (req, res, buf) => {
-        try {
-            JSON.parse(buf);
-        } catch (e) {
-            res.status(400).json({ success: false, message: 'Invalid JSON payload' });
-            throw new Error('Invalid JSON');
-        }
-    }
-}));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb', parameterLimit: 10000 }));
 app.use(cookieParser());
 
