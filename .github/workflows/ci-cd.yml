@@ -1,0 +1,212 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, staging, develop ]
+  pull_request:
+    branches: [ main, staging, develop ]
+
+jobs:
+  # ==========================================
+  # CONTINUOUS INTEGRATION (CI)
+  # ==========================================
+  test-and-audit:
+    name: Test, Audit & Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Verify Code Syntax
+        run: |
+          node --check index.js
+          node --check worker.js
+
+      - name: Dependency Security Audit
+        run: npm audit --audit-level=high || true
+
+      - name: Security SAST Scan (Trivy)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          ignore-unfixed: true
+          format: 'table'
+          exit-code: '0'
+          severity: 'HIGH,CRITICAL'
+
+      - name: Validate Dockerfile Syntax
+        run: |
+          docker build --dry-run -f Dockerfile .
+          docker build --dry-run -f Dockerfile.worker .
+
+  # ==========================================
+  # BUILD AND PUSH CONTAINER IMAGES
+  # ==========================================
+  build-and-push:
+    name: Build & Push Images
+    needs: test-and-audit
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api, worker]
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Extract Environment Tag
+        id: get-tag
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "tag=prod" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" = "refs/heads/staging" ]; then
+            echo "tag=staging" >> $GITHUB_OUTPUT
+          else
+            echo "tag=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ matrix.service == 'api' && 'Dockerfile' || 'Dockerfile.worker' }}
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/intervai-${{ matrix.service }}:${{ steps.get-tag.outputs.tag }}
+            ${{ steps.login-ecr.outputs.registry }}/intervai-${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ==========================================
+  # CONTINUOUS DELIVERY (CD) - DEPLOYMENTS
+  # ==========================================
+  deploy-dev:
+    name: Deploy to Dev
+    needs: build-and-push
+    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name intervai-dev-cluster --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Deploy to Dev Cluster
+        run: |
+          kubectl set image deployment/intervai-api api=${{ secrets.AWS_ECR_REGISTRY }}/intervai-api:${{ github.sha }} -n dev
+          kubectl set image deployment/intervai-worker worker=${{ secrets.AWS_ECR_REGISTRY }}/intervai-worker:${{ github.sha }} -n dev
+          kubectl rollout status deployment/intervai-api -n dev --timeout=120s
+
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-and-push
+    if: github.ref == 'refs/heads/staging' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name intervai-staging-cluster --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Deploy to Staging Cluster
+        run: |
+          kubectl set image deployment/intervai-api api=${{ secrets.AWS_ECR_REGISTRY }}/intervai-api:${{ github.sha }} -n staging
+          kubectl set image deployment/intervai-worker worker=${{ secrets.AWS_ECR_REGISTRY }}/intervai-worker:${{ github.sha }} -n staging
+          kubectl rollout status deployment/intervai-api -n staging --timeout=180s
+
+  deploy-production:
+    name: Deploy to Production
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Update Kubeconfig
+        run: aws eks update-kubeconfig --name intervai-prod-cluster --region ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Deploy to Production Cluster (Rolling Update)
+        run: |
+          kubectl set image deployment/intervai-api api=${{ secrets.AWS_ECR_REGISTRY }}/intervai-api:${{ github.sha }} -n prod
+          kubectl set image deployment/intervai-worker worker=${{ secrets.AWS_ECR_REGISTRY }}/intervai-worker:${{ github.sha }} -n prod
+          
+      - name: Verify Deployment (Rollback if failed)
+        run: |
+          if ! kubectl rollout status deployment/intervai-api -n prod --timeout=300s; then
+            echo "❌ Production deployment failed! Initiating rollback..."
+            kubectl rollout undo deployment/intervai-api -n prod
+            kubectl rollout status deployment/intervai-api -n prod
+            exit 1
+          fi
+          echo "✅ Production deployment completed successfully!"
+
+      - name: Notify Slack — Success
+        if: success()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "✅ *Production Deploy Succeeded* — `${{ github.sha }}` by @${{ github.actor }}\nBranch: `${{ github.ref_name }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+
+      - name: Notify Slack — Failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "text": "🚨 *Production Deploy FAILED* — `${{ github.sha }}` by @${{ github.actor }}\nBranch: `${{ github.ref_name }}`\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Run — Rollback initiated>"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK

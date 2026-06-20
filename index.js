@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import helmet from "helmet";
 import mongoose from "mongoose";
+import client from "prom-client";
 import { connectDB } from "./config/db.js";
 import userRouter from "./routes/user.routes.js";
 import sessionRouter from "./routes/session.routes.js";
@@ -17,9 +18,59 @@ import notificationRouter from "./routes/notification.routes.js";
 import bulkRouter from "./routes/bulk.routes.js";
 import { generalLimiter } from "./middlewares/rateLimiter.js";
 
+// ---------------------------------------------------------------------------
+// Prometheus Metrics Setup
+// ---------------------------------------------------------------------------
+const register = new client.Registry();
+client.collectDefaultMetrics({ register, prefix: 'intervai_' });
+
+const httpRequestsTotal = new client.Counter({
+    name: 'intervai_http_requests_total',
+    help: 'Total number of HTTP requests',
+    labelNames: ['method', 'route', 'status_code'],
+    registers: [register],
+});
+
+const httpRequestDuration = new client.Histogram({
+    name: 'intervai_http_request_duration_seconds',
+    help: 'Duration of HTTP requests in seconds',
+    labelNames: ['method', 'route', 'status_code'],
+    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+    registers: [register],
+});
+
+const activeConnections = new client.Gauge({
+    name: 'intervai_active_connections',
+    help: 'Number of active HTTP connections',
+    registers: [register],
+});
+
+const dbOperationsTotal = new client.Counter({
+    name: 'intervai_db_operations_total',
+    help: 'Total number of database operations',
+    labelNames: ['operation', 'collection'],
+    registers: [register],
+});
+
+export { register, httpRequestsTotal, httpRequestDuration, dbOperationsTotal };
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
+
+// HTTP instrumentation middleware (before routes)
+app.use((req, res, next) => {
+    activeConnections.inc();
+    const end = httpRequestDuration.startTimer();
+    res.on('finish', () => {
+        const route = req.route?.path || req.path || 'unknown';
+        const labels = { method: req.method, route, status_code: res.statusCode };
+        httpRequestsTotal.inc(labels);
+        end(labels);
+        activeConnections.dec();
+    });
+    next();
+});
 
 app.use(helmet({
     contentSecurityPolicy: NODE_ENV === 'production',
@@ -68,6 +119,23 @@ if (NODE_ENV === 'development') {
     });
 }
 
+// Prometheus scrape endpoint — restrict to internal/localhost in production
+app.get('/metrics', async (req, res) => {
+    const clientIp = req.ip || req.connection.remoteAddress || '';
+    const isInternal = clientIp === '::1' || clientIp === '127.0.0.1'
+        || clientIp.startsWith('172.') || clientIp.startsWith('10.')
+        || NODE_ENV !== 'production';
+    if (!isInternal) {
+        return res.status(403).json({ error: 'Forbidden' });
+    }
+    try {
+        res.set('Content-Type', register.contentType);
+        res.end(await register.metrics());
+    } catch (err) {
+        res.status(500).end(err.message);
+    }
+});
+
 app.get('/', (req, res) => {
     res.json({
         success: true,
@@ -77,6 +145,7 @@ app.get('/', (req, res) => {
         timestamp: new Date().toISOString(),
         endpoints: {
             health: '/health',
+            metrics: '/metrics',
             users: '/api/v1/user',
             sessions: '/api/v1/session',
             questions: '/api/v1/question',
@@ -160,8 +229,9 @@ const startServer = async () => {
 
         app.listen(PORT, () => {
             console.log(`✅ Server running on http://localhost:${PORT}`);
-            console.log(`🏥 Health: http://localhost:${PORT}/health`);
-            console.log(`📚 API: http://localhost:${PORT}/api/v1\n`);
+            console.log(`🏥 Health:   http://localhost:${PORT}/health`);
+            console.log(`📊 Metrics:  http://localhost:${PORT}/metrics`);
+            console.log(`📚 API:      http://localhost:${PORT}/api/v1\n`);
         });
 
     } catch (error) {

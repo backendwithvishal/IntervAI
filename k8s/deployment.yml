@@ -1,0 +1,249 @@
+---
+# ─── Namespace ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: intervai
+  labels:
+    app.kubernetes.io/name: intervai
+    environment: production
+
+---
+# ─── ConfigMap ────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: intervai-config
+  namespace: intervai
+data:
+  NODE_ENV: "production"
+  PORT: "5000"
+  REDIS_HOST: "redis-service"
+  REDIS_PORT: "6379"
+  LOG_LEVEL: "info"
+
+---
+# ─── API Deployment ───────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intervai-api
+  namespace: intervai
+  labels:
+    app: intervai-api
+    version: "1.0.0"
+    component: api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: intervai-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: intervai-api
+        version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "5000"
+    spec:
+      serviceAccountName: intervai-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: api
+          image: YOUR_ECR_REGISTRY/intervai-api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 5000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: intervai-config
+            - secretRef:
+                name: intervai-secrets
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "125m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: exports-volume
+              mountPath: /app/exports
+            - name: logs-volume
+              mountPath: /app/logs
+      volumes:
+        - name: exports-volume
+          persistentVolumeClaim:
+            claimName: exports-pvc
+        - name: logs-volume
+          emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - intervai-api
+                topologyKey: kubernetes.io/hostname
+
+---
+# ─── Worker Deployment ────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intervai-worker
+  namespace: intervai
+  labels:
+    app: intervai-worker
+    version: "1.0.0"
+    component: worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: intervai-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: intervai-worker
+        version: "1.0.0"
+    spec:
+      serviceAccountName: intervai-service-account
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: YOUR_ECR_REGISTRY/intervai-worker:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: intervai-config
+            - secretRef:
+                name: intervai-secrets
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "250m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          livenessProbe:
+            exec:
+              command: ["node", "-e", "process.exit(0)"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: exports-volume
+              mountPath: /app/exports
+      volumes:
+        - name: exports-volume
+          persistentVolumeClaim:
+            claimName: exports-pvc
+
+---
+# ─── API Service ──────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: intervai-api-service
+  namespace: intervai
+  labels:
+    app: intervai-api
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "5000"
+spec:
+  selector:
+    app: intervai-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5000
+      protocol: TCP
+  type: ClusterIP
+
+---
+# ─── ServiceAccount ───────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: intervai-service-account
+  namespace: intervai
+  labels:
+    app: intervai
+
+---
+# ─── PersistentVolumeClaim for Exports ───────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: exports-pvc
+  namespace: intervai
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: efs-sc
+  resources:
+    requests:
+      storage: 10Gi

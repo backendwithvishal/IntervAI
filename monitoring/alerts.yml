@@ -1,0 +1,157 @@
+groups:
+  # ─── API Health & Availability ────────────────────────────────────────────
+  - name: api_availability
+    interval: 30s
+    rules:
+      - alert: APIDown
+        expr: up{job="intervai-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "IntervAI API is DOWN"
+          description: "The API at {{ $labels.instance }} has been unreachable for > 1 minute."
+          runbook: "https://github.com/your-org/IntervAI/blob/main/docs/runbooks/api-down.md"
+
+      - alert: HighErrorRate
+        expr: |
+          rate(intervai_http_requests_total{status_code=~"5.."}[5m])
+            / rate(intervai_http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "High HTTP 5xx error rate (> 5%)"
+          description: "Error rate is {{ humanizePercentage $value }} on {{ $labels.instance }}."
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(intervai_http_request_duration_seconds_bucket[5m])
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "p95 API latency > 2s"
+          description: "95th percentile latency is {{ $value | humanizeDuration }} on {{ $labels.instance }}."
+
+      - alert: VeryHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            rate(intervai_http_request_duration_seconds_bucket[5m])
+          ) > 10
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "p99 API latency > 10s"
+          description: "99th percentile latency is {{ $value | humanizeDuration }} on {{ $labels.instance }}."
+
+  # ─── Infrastructure ───────────────────────────────────────────────────────
+  - name: infrastructure
+    rules:
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by(instance)(rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "High CPU usage (> 80%)"
+          description: "CPU usage is {{ $value | humanize }}% on {{ $labels.instance }}."
+
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "High memory usage (> 85%)"
+          description: "Memory usage is {{ $value | humanize }}% on {{ $labels.instance }}."
+
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 15
+        for: 5m
+        labels:
+          severity: warning
+          team: infra
+        annotations:
+          summary: "Low disk space (< 15% free)"
+          description: "Disk has {{ $value | humanize }}% free on {{ $labels.instance }}."
+
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100 < 5
+        for: 2m
+        labels:
+          severity: critical
+          team: infra
+        annotations:
+          summary: "Critical disk space (< 5% free)"
+          description: "Disk is almost full on {{ $labels.instance }} — only {{ $value | humanize }}% free."
+
+  # ─── Database ─────────────────────────────────────────────────────────────
+  - name: database
+    rules:
+      - alert: MongoDBDown
+        expr: up{job="mongodb-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "MongoDB is DOWN"
+          description: "MongoDB exporter at {{ $labels.instance }} is unreachable."
+
+      - alert: RedisDown
+        expr: up{job="redis-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Redis is DOWN"
+          description: "Redis exporter at {{ $labels.instance }} is unreachable."
+
+      - alert: RedisHighMemory
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Redis memory usage > 90%"
+          description: "Redis is using {{ humanizePercentage $value }} of max memory."
+
+  # ─── Node.js Process ──────────────────────────────────────────────────────
+  - name: nodejs_process
+    rules:
+      - alert: HighEventLoopLag
+        expr: intervai_nodejs_eventloop_lag_seconds > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "High Node.js event loop lag"
+          description: "Event loop lag is {{ $value | humanizeDuration }} — possible CPU blocking."
+
+      - alert: HighHeapUsage
+        expr: |
+          intervai_nodejs_heap_size_used_bytes / intervai_nodejs_heap_size_total_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "Node.js heap usage > 90%"
+          description: "Heap is at {{ humanizePercentage $value }} — possible memory leak."
