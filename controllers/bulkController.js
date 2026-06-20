@@ -91,6 +91,17 @@ export const bulkUpdateDifficulty = async (req, res) => {
             });
         }
 
+        // Validate all IDs
+        const invalidIds = questionIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+        if (invalidIds.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid question IDs found in request',
+                invalidIds
+            });
+        }
+
+
         // Verify ownership
         const questions = await Question.find({ _id: { $in: questionIds } })
             .populate('session', 'user');
@@ -147,6 +158,17 @@ export const bulkTogglePin = async (req, res) => {
                 message: 'isPinned must be a boolean'
             });
         }
+
+        // Validate all IDs
+        const invalidIds = questionIds.filter(id => !mongoose.Types.ObjectId.isValid(id));
+        if (invalidIds.length > 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid question IDs found in request',
+                invalidIds
+            });
+        }
+
 
         // Verify ownership
         const questions = await Question.find({ _id: { $in: questionIds } })

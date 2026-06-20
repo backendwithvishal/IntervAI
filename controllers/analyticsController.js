@@ -2,6 +2,7 @@
 // controllers/analyticsController.js
 // ============================================
 import { AnalyticsService } from '../services/analyticsService.js';
+import { Session } from '../models/session.model.js';
 import mongoose from 'mongoose';
 
 /**
@@ -40,7 +41,23 @@ export const getSessionAnalytics = async (req, res) => {
             });
         }
 
+        const session = await Session.findById(sessionId).select('user').lean();
+        if (!session) {
+            return res.status(404).json({
+                success: false,
+                message: 'Session not found'
+            });
+        }
+
+        if (session.user.toString() !== req.id) {
+            return res.status(403).json({
+                success: false,
+                message: 'Unauthorized access to this session'
+            });
+        }
+
         const analytics = await AnalyticsService.getSessionAnalytics(sessionId);
+
 
         return res.status(200).json({
             success: true,

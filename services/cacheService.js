@@ -8,7 +8,7 @@ const CACHE_TTL = 3600; // 1 hour
 
 export class CacheService {
     static generateKey(role, experience, topics) {
-        const normalized = `${role}:${experience}:${topics.sort().join(',')}`.toLowerCase();
+        const normalized = `${role}:${experience}:${[...topics].sort().join(',')}`.toLowerCase();
         return crypto.createHash('md5').update(normalized).digest('hex');
     }
 

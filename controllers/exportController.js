@@ -166,6 +166,22 @@ export const downloadExport = async (req, res) => {
             });
         }
 
+        // Security: Verify authenticated user owns the session matching the filename
+        const parts = sanitizedFilename.split('_');
+        if (parts.length >= 2 && parts[0] === 'questions') {
+            const sessionId = parts[1];
+            if (mongoose.Types.ObjectId.isValid(sessionId)) {
+                const session = await Session.findById(sessionId).select('user').lean();
+                if (session && session.user.toString() !== req.id) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "Unauthorized access to this export file"
+                    });
+                }
+            }
+        }
+
+
         const filepath = path.join(process.cwd(), 'exports', sanitizedFilename);
 
         // Check if file exists

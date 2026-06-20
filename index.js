@@ -149,7 +149,7 @@ const startServer = async () => {
     try {
         console.log('\n🚀 Starting Interview Prep API...\n');
 
-        const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GROQ_API'];
+        const requiredEnvVars = ['MONGO_URI', 'JWT_SECRET', 'GROQ_API_KEY'];
         const missing = requiredEnvVars.filter(v => !process.env[v]);
         if (missing.length > 0) {
             throw new Error(`Missing env vars: ${missing.join(', ')}`);

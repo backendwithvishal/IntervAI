@@ -152,7 +152,7 @@ export const generateInterviewQuestion = async (req, res) => {
             success: true,
             message: "Question generation queued. Check status using job ID",
             jobId: job.id,
-            checkStatusUrl: `/api/v1/queue/job/${job.id}`,
+            checkStatusUrl: `/api/v1/queue/question/${job.id}`,
             estimatedTime: "30-60 seconds"
         });
 
